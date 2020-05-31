@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <libgen.h> // Prototype for basename() function
+#include <elf.h>
 
 #define HEXA_MODE 0
 #define DECI_MODE 1
@@ -11,9 +12,7 @@
 #define BYTE sizeof(char)
 char* greeting1 = "hello";
 char* greeting2 = "shalom";
-int unit_size = INT;
-int unitSize = 1;
-char buffer[100] = "";
+char buffer[100] = "abcdef";
 
 typedef struct
 {
@@ -24,24 +23,15 @@ typedef struct
     size_t mem_count;
     /*Any additional fields you deem necessary*/
     char display_mode;
+    Elf32_Ehdr* header;
 } state;
 
-char* unit_to_format(int unit) {
-    static char* formats[] = {"%#hhx\n", "%#hx\n", "No such unit", "%#x\n"};
-    return formats[unit_size-1];
-    /* If the above is too confusing, this can also work:
-    switch (unit_size) {
-        case 1:
-            return "%#hhx\n";
-        case 2:
-            return "%#hx\n";
-        case 4:
-            return "%#hhx\n";
-        default:
-            return "Unknown unit";
-    }
-    */
-}  
+void freeState(state* s){
+    if(s->header != NULL)free(s->header);
+    free(s);
+}
+
+ 
 
 char* format(state* s){
     char* formats[] = {"%#hhx\n", "%#hx\n", "No such unit", "%#x\n", "%#hhd\n", "%#hd\n", "No such unit", "%#d\n"};
@@ -49,24 +39,24 @@ char* format(state* s){
 }
 
 /* Reads units from file */
-void read_units_to_memory(FILE* input, char* buffer, int count) {
-    fread(buffer, unit_size, count, input);    
+void read_units_to_memory(FILE* input, char* buffer, int count,state* s) {
+    fread(buffer, s->unit_size, count, input);    
 }
 
 /* Prints the buffer to screen by converting it to text with printf */
 void print_units(FILE* output, char* buffer, int count, state* s) {
-    char* end = buffer + unit_size*count;
+    char* end = buffer + s->unit_size*count;
     while (buffer < end) {
         //print ints
         int var = *((int*)(buffer));
         fprintf(output, format(s), var);
-        buffer += unit_size;
+        buffer += s->unit_size;
     }
 }
 
 /* Writes buffer to file without converting it to text with write */
-void write_units(FILE* output, char* buffer, int count) {
-    fwrite(buffer, unit_size, count, output);
+void write_units(FILE* output, char* buffer, int count,state* s) {
+    fwrite(buffer, s->unit_size, count, output);
 }
 /*****************************************************************************/
 
@@ -119,6 +109,11 @@ void setFileName(state *s)
     strncpy(s->file_name, fileName, 100); //strncpy might malloc??
     if (s->debug_mode)
         printf("(DEBUG: set file name to %s)\n", s->file_name);
+    //add header now too
+    if(s->header ==NULL) s->header = malloc(sizeof(Elf32_Ehdr));
+    FILE* file = fopen(s->file_name,"rb");
+    fread(s->header,sizeof(Elf32_Ehdr),1,file);
+    fclose(file);
 }
 
 void setUnitSize(state *s)
@@ -139,6 +134,7 @@ void setUnitSize(state *s)
 
 void LoadIntoMemory(state *s)
 {
+    char* buf = buffer;
     if ((s->file_name == NULL) || (!strcmp("", s->file_name)))
     {
         printf("file name not defined or empty. aborting action.\n");
@@ -184,22 +180,23 @@ void memoryDisplay(state *s)
 
 void saveIntoFile(state *s)
 {
+    char* buf = buffer;
     printf("provide source address(Hexa):\n");
     int sourceAdrs = getHexaInput(10);
-    char* src = (char*)sourceAdrs;
+    char* src = sourceAdrs==0? s->mem_buf : (char*)sourceAdrs;
     printf("provide target file offset (Hexa):\n");
     int fileOffset = getHexaInput(10);
     printf("provide number of units (Decimal):\n");
     int numUnits = getDeciInput(8);
 
-    FILE* file = fopen(s->file_name,"wb");
+    FILE* file = fopen(s->file_name,"rb+");
     if(!file){
         printf("failed to open file. aborting action\n");
         return;
     }
-    if(s->debug_mode)printf("(DEBUG: file %s was opened for writing",s->file_name);
+    if(s->debug_mode)printf("(DEBUG: file %s was opened for writing)\n",s->file_name);
     int seekRes = fseek(file,fileOffset,SEEK_SET);
-    if(s->debug_mode)printf("(DEBUG: seeking to offset %x returned %d)\n",fileOffset,seekRes);
+    if(s->debug_mode)printf("(DEBUG: seeking to offset 0x%x returned %d)\n",fileOffset,seekRes);
     int writeRes = fwrite(src,s->unit_size,numUnits,file);
     if(s->debug_mode)printf("(DEBUG: wrote %d units to %s)\n",writeRes,s->file_name);
     int closeRes = fclose(file);
@@ -208,7 +205,8 @@ void saveIntoFile(state *s)
 
 //incomplete and bad!
 void memoryModify(state* s){
-    int* valp = malloc(sizeof(int));
+    char* buf = buffer;
+    unsigned int* valp = malloc(sizeof(int));
     printf("provide location (Hexa):\n");
     int location = getHexaInput(10);
     printf("provide value (Hexa):\n");
@@ -216,7 +214,8 @@ void memoryModify(state* s){
     *valp = value;
     if(s->debug_mode)printf("(DEBUG: received location: 0x%x and value: 0x%x)\n",location,value);
     char *mem = (location == 0 ? s->mem_buf : (char *)location);
-    char* values = valp;
+    //unsigned char* mem = s->mem_buf+location;
+    unsigned char* values = valp;
     int i =0;
     for(i=0;i<s->unit_size;i++){
         mem[i]=values[i];
@@ -224,6 +223,21 @@ void memoryModify(state* s){
     print_units(stdout,mem,1,s);
     free(valp);
 }
+
+void printEntryPoint(state* s){
+    Elf32_Ehdr* hdr = malloc(sizeof(Elf32_Ehdr));
+    FILE* file = fopen(s->file_name,"rb");
+    fread(hdr,sizeof(Elf32_Ehdr),1,file);
+    printf("entry at %x\n",(int)hdr->e_entry);
+    fclose(file);
+    free(hdr);
+}
+
+void printBuffer(state* s){
+    char* b = buffer;
+    printf("%s\n",buffer);
+}
+
 struct MenuItem
 {
     char *name;
@@ -238,25 +252,27 @@ const struct MenuItem menu[] = {
     {"Memory Display", memoryDisplay},
     {"Save Into File", saveIntoFile},
     {"Memory Modify", memoryModify},
+    {"Print Buffer",printBuffer},
     {"Quit", quit},
     {NULL, NULL}};
 
 void init(state *s){
-    strcpy(s->file_name,"abc");
+    strcpy(s->file_name,"deep");
     s->unit_size=4;
 }
 
+//entry at byte 24
 int main(int argc, char **argv)
 {
     state *myState = calloc(1, sizeof(state));
     myState->unit_size = 1;
     init(myState);
+    printEntryPoint(myState);
     int lowOption = 0;
     int highOption = (sizeof(menu) / sizeof(struct MenuItem)) - 1;
     struct MenuItem menuItem;
     while (1)
     {
-        printf("%s\n",greeting1);
         printf("Please choose a function:\n");
         for (int i = 0;; i++)
         {
@@ -272,6 +288,6 @@ int main(int argc, char **argv)
         else
             menu[choice].fun(myState);
     }
-    free(myState);
+    freeState(myState);
     return 0;
 }
