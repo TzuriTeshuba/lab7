@@ -206,6 +206,7 @@ void saveIntoFile(state *s)
 //incomplete and bad!
 void memoryModify(state* s){
     char* buf = buffer;
+    printf("buffer at: %x\n",buf);
     unsigned int* valp = malloc(sizeof(int));
     printf("provide location (Hexa):\n");
     int location = getHexaInput(10);
@@ -214,11 +215,12 @@ void memoryModify(state* s){
     *valp = value;
     if(s->debug_mode)printf("(DEBUG: received location: 0x%x and value: 0x%x)\n",location,value);
     char *mem = (location == 0 ? s->mem_buf : (char *)location);
-    //unsigned char* mem = s->mem_buf+location;
     unsigned char* values = valp;
     int i =0;
-    for(i=0;i<s->unit_size;i++){
-        mem[i]=values[i];
+    printf("mem   : %s\n",mem);
+    printf("values: %s\n",values);
+    for(i=0; i<s->unit_size; i++){
+        mem[i]=values[s->unit_size-i-1];
     }
     print_units(stdout,mem,1,s);
     free(valp);
@@ -260,14 +262,22 @@ void init(state *s){
     strcpy(s->file_name,"deep");
     s->unit_size=4;
 }
-
+void printFileBytes(char* fileName){
+    FILE* file = fopen(fileName,"rb");
+    int i=0;
+    while((i = fgetc(file))!= EOF){
+        printf("%02x ",i);
+    }
+    fclose(file);
+}
 //entry at byte 24
 int main(int argc, char **argv)
 {
+    printFileBytes("abc");
     state *myState = calloc(1, sizeof(state));
     myState->unit_size = 1;
-    init(myState);
-    printEntryPoint(myState);
+    //init(myState);
+    //printEntryPoint(myState);
     int lowOption = 0;
     int highOption = (sizeof(menu) / sizeof(struct MenuItem)) - 1;
     struct MenuItem menuItem;
